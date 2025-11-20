@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Space Dodger — Gioco in HTML/CSS/JS</title>
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#071122; --accent:#39d3ff; --danger:#ff5c5c; --muted:#98a1b3;
+      --glass: rgba(255,255,255,0.03);
+      --font: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:var(--font);background:linear-gradient(180deg,var(--bg),#061024);color:#e6f0ff}
+    .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:28px}
+    .card{width:940px;max-width:100%;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:14px;padding:18px;display:grid;grid-template-columns:1fr 320px;gap:16px;box-shadow:0 8px 30px rgba(2,6,23,0.7)}
+
+    /* Canvas area */
+    .game-area{background:radial-gradient(1200px 500px at 10% 0%, rgba(57,211,255,0.03), transparent), linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.02));border-radius:10px;padding:12px;display:flex;flex-direction:column}
+    #gameCanvas{background:linear-gradient(#02122a, rgba(2,8,22,0.8));border-radius:8px;width:100%;height:520px;display:block}
+
+    /* Sidebar */
+    .panel{padding:12px;background:var(--glass);border-radius:10px;display:flex;flex-direction:column;gap:12px}
+    h1{font-size:18px;margin:6px 0}
+    .score{display:flex;justify-content:space-between;align-items:center;padding:10px;border-radius:8px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.03));font-weight:600}
+    .controls{display:grid;gap:8px}
+    button{appearance:none;border:0;padding:10px;border-radius:8px;background:linear-gradient(90deg,var(--accent),#60f0ff);color:#05202b;font-weight:700;cursor:pointer}
+    button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted);font-weight:600}
+    .muted{color:var(--muted);font-size:13px}
+    .footer{font-size:12px;color:var(--muted);margin-top:auto}
+
+    /* HUD inside canvas (fallback) */
+    .hud{position:absolute;pointer-events:none}
+
+    /* Responsive */
+    @media(max-width:880px){
+      .card{grid-template-columns:1fr;}
+      #gameCanvas{height:420px}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="game-area">
+        <h1>Space Dodger</h1>
+        <canvas id="gameCanvas" width="800" height="520" aria-label="Area di gioco"></canvas>
+        <div style="display:flex;margin-top:10px;gap:10px;align-items:center">
+          <div class="muted">Controlli: freccia sinistra / destra — tocco sul lato sinistro/destro per dispositivi touch</div>
+          <div style="margin-left:auto" class="muted">Obiettivo: evita gli asteroidi più a lungo possibile</div>
+        </div>
+      </div>
+
+      <aside class="panel">
+        <div class="score">
+          <div>Score: <span id="score">0</span></div>
+          <div class="muted">High: <span id="highscore">0</span></div>
+        </div>
+
+        <div class="controls">
+          <button id="startBtn">Avvia / Riprendi</button>
+          <button id="pauseBtn" class="ghost">Pausa</button>
+          <button id="restartBtn" class="ghost">Riavvia</button>
+          <div class="muted">Difficoltà: <span id="difficultyLabel">Facile</span></div>
+          <input id="difficultyRange" type="range" min="1" max="5" value="1">
+        </div>
+
+        <div class="muted">Suggerimenti:
+          <ul style="margin:8px 0 0 16px">
+            <li>Mantieni lo spazio a destra/sinistra e anticipa la traiettoria degli asteroidi</li>
+            <li>Più alto il punteggio, più velocemente arrivano gli asteroidi</li>
+          </ul>
+        </div>
+
+        <div class="footer">Creato con HTML, CSS e JavaScript — Salva la pagina come <code>game.html</code> e aprila in un browser moderno.</div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+  /* ===== Game: Space Dodger =====
+     Single-file, no external assets. Focus on smooth movement, localStorage highscore,
+     responsive touch controls, and increasing difficulty.
+  */
+
+  (function(){
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const scoreEl = document.getElementById('score');
+    const highscoreEl = document.getElementById('highscore');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const diffRange = document.getElementById('difficultyRange');
+    const diffLabel = document.getElementById('difficultyLabel');
+
+    // Resize canvas to CSS size while keeping internal resolution
+    function resizeCanvas(){
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(300, Math.floor(rect.width * devicePixelRatio));
+      canvas.height = Math.max(240, Math.floor(rect.height * devicePixelRatio));
+      ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // Game state
+    let lastTime = 0, running = false, paused = false;
+    let score = 0, highscore = 0;
+    const STORAGE_KEY = 'space_dodger_highscore_v1';
+
+    // Player
+    const player = {
+      x: 100, y: 0, w: 44, h: 28, speed: 320, vx: 0
+    };
+
+    // Asteroids
+    const asteroids = [];
+    let spawnTimer = 0; // seconds
+    let spawnInterval = 1.2; // seconds
+
+    // Difficulty
+    let difficulty = parseInt(diffRange.value,10);
+    const DIFF_LABELS = ['Facile','Normale','Difficile','Esperto','Impossibile'];
+
+    function loadHighscore(){
+      try{ const n = parseInt(localStorage.getItem(STORAGE_KEY)||'0',10); if(!isNaN(n)) highscore = n; }catch(e){}
+      highscoreEl.textContent = highscore;
+    }
+    function saveHighscore(){
+      try{ localStorage.setItem(STORAGE_KEY, String(highscore)); }catch(e){}
+    }
+    loadHighscore();
+
+    // Input
+    const keys = {left:false,right:false};
+    window.addEventListener('keydown', e=>{
+      if(e.key === 'ArrowLeft' || e.key === 'a') keys.left = true;
+      if(e.key === 'ArrowRight' || e.key === 'd') keys.right = true;
+      if(e.key === ' '){ togglePause(); }
+    });
+    window.addEventListener('keyup', e=>{
+      if(e.key === 'ArrowLeft' || e.key === 'a') keys.left = false;
+      if(e.key === 'ArrowRight' || e.key === 'd') keys.right = false;
+    });
+
+    // Touch controls: tap left/right side OR on‑screen buttons
+    const btnLeft = document.getElementById('btnLeft');
+    const btnRight = document.getElementById('btnRight');
+
+    // Touch on canvas
+    canvas.addEventListener('touchstart', e=>{
+      const t = e.touches[0];
+      const r = canvas.getBoundingClientRect();
+      const cx = t.clientX - r.left;
+      if(cx < r.width/2) keys.left = true; else keys.right = true;
+      e.preventDefault();
+    }, {passive:false});
+    canvas.addEventListener('touchend', ()=>{ keys.left = keys.right = false; });
+    canvas.addEventListener('touchcancel', ()=>{ keys.left = keys.right = false; });
+
+    // Touch buttons (mobile)
+    if(btnLeft && btnRight){
+      btnLeft.addEventListener('touchstart', ()=>{ keys.left = true; }, {passive:true});
+      btnLeft.addEventListener('touchend', ()=>{ keys.left = false; });
+      btnRight.addEventListener('touchstart', ()=>{ keys.right = true; }, {passive:true});
+      btnRight.addEventListener('touchend', ()=>{ keys.right = false; });
+    }
+    canvas.addEventListener('touchstart', e=>{
+      const t = e.touches[0];
+      const r = canvas.getBoundingClientRect();
+      const cx = t.clientX - r.left;
+      if(cx < r.width/2) keys.left = true; else keys.right = true;
+      e.preventDefault();
+    }, {passive:false});
+    canvas.addEventListener('touchend', e=>{ keys.left = keys.right = false; });
+    canvas.addEventListener('touchcancel', e=>{ keys.left = keys.right = false; });
+
+    // Start / Pause / Restart
+    startBtn.addEventListener('click', ()=>{ if(!running) start(); else if(paused) resume(); });
+    pauseBtn.addEventListener('click', ()=>{ togglePause(); });
+    restartBtn.addEventListener('click', ()=>{ restart(); });
+
+    diffRange.addEventListener('input', ()=>{ difficulty = parseInt(diffRange.value,10); diffLabel.textContent = DIFF_LABELS[difficulty-1]; adjustDifficulty(); });
+    diffLabel.textContent = DIFF_LABELS[difficulty-1];
+
+    function adjustDifficulty(){
+      // Adjust spawnInterval and asteroid speed based on difficulty
+      spawnInterval = 1.4 - (difficulty-1) * 0.18; // 1.4 .. 0.52
+    }
+    adjustDifficulty();
+
+    function start(){
+      running = true; paused = false; score = 0; asteroids.length = 0; player.x = canvas.width/ (devicePixelRatio*2) ; player.y = canvas.height/ (devicePixelRatio*1.2);
+      spawnTimer = 0; lastTime = performance.now(); requestAnimationFrame(loop);
+      startBtn.textContent = 'Gioca';
+      pauseBtn.classList.remove('ghost');
+    }
+    function pause(){ paused = true; pauseBtn.textContent = 'Riprendi'; }
+    function resume(){ paused = false; lastTime = performance.now(); pauseBtn.textContent = 'Pausa'; requestAnimationFrame(loop); }
+    function togglePause(){ if(!running) return; paused ? resume() : pause(); }
+    function restart(){ running = false; pauseBtn.textContent = 'Pausa'; start(); }
+
+    // Game loop
+    function loop(ts){
+      if(!running) return; const dt = Math.min(0.033, (ts - lastTime)/1000); lastTime = ts; if(!paused){ update(dt); render(); }
+      requestAnimationFrame(loop);
+    }
+
+    function update(dt){
+      // move player
+      let dir = 0; if(keys.left) dir -= 1; if(keys.right) dir += 1;
+      player.vx = dir * player.speed;
+      player.x += player.vx * dt;
+      // clamp
+      const w = canvas.width / devicePixelRatio;
+      const h = canvas.height / devicePixelRatio;
+      player.x = Math.max(8, Math.min(w - player.w - 8, player.x));
+      player.y = h - player.h - 18;
+
+      // spawn asteroids
+      spawnTimer += dt;
+      if(spawnTimer > spawnInterval){ spawnTimer = 0; spawnAsteroid(); }
+
+      // update asteroids
+      for(let i = asteroids.length-1; i>=0; i--){
+        const a = asteroids[i];
+        a.y += a.vy * dt;
+        a.rot += a.vr * dt;
+        // offscreen remove
+        if(a.y - a.size > h + 40){ asteroids.splice(i,1); score += 1; scoreEl.textContent = score; if(score > highscore){ highscore = score; highscoreEl.textContent = highscore; saveHighscore(); } }
+        // collision check
+        if(hitTest(player, a)){
+          // game over
+          running = false;
+          showGameOver();
+          return;
+        }
+      }
+
+      // increase difficulty gradually
+      if(score % 10 === 0 && score > 0){ // every 10 points speed up slightly
+        spawnInterval = Math.max(0.35, spawnInterval - 0.0005*score);
+      }
+    }
+
+    function spawnAsteroid(){
+      const w = canvas.width / devicePixelRatio;
+      const h = canvas.height / devicePixelRatio;
+      const size = 18 + Math.random()*52;
+      const x = 12 + Math.random() * (w - 24 - size);
+      // base speed influenced by difficulty and size
+      const base = 80 + difficulty * 40 + Math.random()*140;
+      const vy = base + (100 * (size/70));
+      const vr = (Math.random()-0.5) * 3;
+      asteroids.push({x, y: -size-10, size, vy, rot: Math.random()*Math.PI*2, vr});
+    }
+
+    function hitTest(p, a){
+      // simple AABB vs circle test (player rectangle, asteroid circle)
+      const cx = a.x + a.size/2, cy = a.y + a.size/2, r = a.size/2;
+      // closest rect point to circle center
+      const closestX = clamp(cx, p.x, p.x + p.w);
+      const closestY = clamp(cy, p.y, p.y + p.h);
+      const dx = cx - closestX, dy = cy - closestY;
+      return (dx*dx + dy*dy) < (r*r*0.84); // slightly forgiving
+    }
+    function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+    function render(){
+      // clear
+      const w = canvas.width / devicePixelRatio;
+      const h = canvas.height / devicePixelRatio;
+      ctx.clearRect(0,0,w,h);
+
+      // starfield background (parallax)
+      drawStars();
+
+      // draw player (ship)
+      drawShip(player.x, player.y, player.w, player.h);
+
+      // draw asteroids
+      for(const a of asteroids) drawAsteroid(a);
+
+      // HUD
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(12,12,140,42);
+      ctx.fillStyle = '#e6f0ff';
+      ctx.font = '14px system-ui, Arial';
+      ctx.fillText('Score: '+score, 20, 36);
+      ctx.restore();
+
+      if(paused){
+        ctx.save(); ctx.fillStyle = 'rgba(2,6,20,0.6)'; ctx.fillRect(0,0,w,h);
+        ctx.fillStyle = '#fff'; ctx.font = '28px system-ui, Arial'; ctx.textAlign = 'center'; ctx.fillText('PAUSA', w/2, h/2);
+        ctx.restore();
+      }
+    }
+
+    // starfield implementation
+    const STAR_COUNT = 80;
+    const stars = [];
+    for(let i=0;i<STAR_COUNT;i++){ stars.push({x:Math.random(), y:Math.random(), r: Math.random()*1.4}); }
+    function drawStars(){
+      const w = canvas.width / devicePixelRatio, h = canvas.height / devicePixelRatio;
+      ctx.save();
+      ctx.fillStyle = '#061426'; ctx.fillRect(0,0,w,h);
+      // moving stars by score to create parallax
+      const offset = (score/40);
+      for(const s of stars){
+        const x = (s.x * w + (offset * (s.r+1))) % w;
+        const y = (s.y * h + (offset * (s.r+1))) % h;
+        ctx.beginPath(); ctx.arc(x,y, s.r, 0, Math.PI*2); ctx.fillStyle = 'rgba(255,255,255,'+(0.25 + s.r*0.5)+')'; ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawShip(x,y,w,h){
+      ctx.save();
+      ctx.translate(x + w/2, y + h/2);
+      // subtle tilt when moving
+      const tilt = (player.vx / player.speed) * 0.4;
+      ctx.rotate(tilt);
+      // body
+      ctx.beginPath(); ctx.moveTo(-w*0.4, h*0.5); ctx.lineTo(0,-h*0.6); ctx.lineTo(w*0.4, h*0.5); ctx.closePath();
+      const g = ctx.createLinearGradient(-w, -h, w, h); g.addColorStop(0, '#46f2ff'); g.addColorStop(1, '#0a83ff');
+      ctx.fillStyle = g; ctx.fill();
+      // cockpit
+      ctx.beginPath(); ctx.ellipse(0, -h*0.15, w*0.18, h*0.14, 0, 0, Math.PI*2); ctx.fillStyle = 'rgba(2,6,20,0.65)'; ctx.fill();
+      ctx.restore();
+    }
+
+    function drawAsteroid(a){
+      ctx.save();
+      ctx.translate(a.x + a.size/2, a.y + a.size/2);
+      ctx.rotate(a.rot);
+      // irregular polygon to mimic rock
+      ctx.beginPath();
+      const spikes = 7; const r = a.size/2;
+      for(let i=0;i<spikes;i++){
+        const theta = (i/spikes) * Math.PI*2;
+        const rr = r * (0.7 + Math.random()*0.5);
+        const px = Math.cos(theta) * rr; const py = Math.sin(theta) * rr;
+        if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#7a6b55'; ctx.fill();
+      // crater highlight
+      ctx.beginPath(); ctx.ellipse(-r*0.25, -r*0.2, r*0.35, r*0.2, 0, 0, Math.PI*2); ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fill();
+      ctx.restore();
+    }
+
+    function showGameOver(){
+      // overlay and message
+      const w = canvas.width / devicePixelRatio, h = canvas.height / devicePixelRatio;
+      ctx.save(); ctx.fillStyle = 'rgba(1,3,9,0.6)'; ctx.fillRect(0,0,w,h);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '28px system-ui, Arial'; ctx.fillText('GAME OVER', w/2, h/2 - 24);
+      ctx.font = '18px system-ui, Arial'; ctx.fillText('Punteggio: '+score, w/2, h/2 + 6);
+      ctx.font = '14px system-ui, Arial'; ctx.fillText('Premi Riavvia per riprovare', w/2, h/2 + 36);
+      ctx.restore();
+    }
+
+    // init position
+    (function init(){
+      const w = canvas.width / devicePixelRatio, h = canvas.height / devicePixelRatio;
+      player.x = w/2 - player.w/2; player.y = h - player.h - 18;
+      scoreEl.textContent = score; highscoreEl.textContent = highscore;
+      render();
+    })();
+
+  })();
+  </script>
+  <style>
+    /* Pulsanti touch su schermo */
+    .touch-controls{display:none;position:absolute;bottom:20px;left:0;right:0;z-index:20;justify-content:space-between;padding:0 40px;pointer-events:none}
+    .touch-btn{width:120px;height:120px;border-radius:999px;background:rgba(255,255,255,0.05);backdrop-filter:blur(6px);pointer-events:auto;display:flex;align-items:center;justify-content:center;font-size:38px;color:#8bdfff;user-select:none}
+
+    @media(max-width:880px){
+      .touch-controls{display:flex}
+      #gameCanvas{touch-action:none}
+    }
+  </style>
+
+  <div class="touch-controls">
+    <div id="btnLeft" class="touch-btn">⟵</div>
+    <div id="btnRight" class="touch-btn">⟶</div>
+  </div>
+</body>
+</html>
